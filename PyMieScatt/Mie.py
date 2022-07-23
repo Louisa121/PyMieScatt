@@ -252,8 +252,55 @@ def AutoMie_ab(m,x):
   else:
     return Mie_ab(m,x)
 
+
 def Mie_SD(m, wavelength, dp, ndp, nMedium=1.0, interpolate=False, asDict=False):
 #  http://pymiescatt.readthedocs.io/en/latest/forward.html#Mie_SD
+  nMedium = nMedium.real
+  m /= nMedium
+  wavelength /= nMedium
+  dp = coerceDType(dp)
+  ndp = coerceDType(ndp)
+  _length = np.size(dp)
+  Q_ext = np.zeros(_length)
+  Q_sca = np.zeros(_length)
+  Q_abs = np.zeros(_length)
+  Q_pr = np.zeros(_length)
+  Q_back = np.zeros(_length)
+  Q_ratio = np.zeros(_length)
+  g = np.zeros(_length)
+  
+  # scaling of 1e-6 to cast in units of inverse megameters - see docs
+  aSDn = np.pi*((dp/2)**2)*ndp*(1e-6)
+  logdp = np.log10(dp)
+
+  for i in range(_length):
+    Q_ext[i], Q_sca[i], Q_abs[i], g[i], Q_pr[i], Q_back[i], Q_ratio[i] = AutoMieQ(m,wavelength,dp[i],nMedium)
+
+  # Bext = trapz(Q_ext*aSDn,dp)
+  # Bsca = trapz(Q_sca*aSDn,dp)
+  # Babs = Bext-Bsca
+  # Bback = trapz(Q_back*aSDn,dp)
+  # Bratio = trapz(Q_ratio*aSDn,dp)
+  # bigG = trapz(g*Q_sca*aSDn,dp)/trapz(Q_sca*aSDn,dp)
+  # Bpr = Bext - bigG*Bsca
+
+  Bext = trapz(Q_ext*aSDn,logdp)
+  Bsca = trapz(Q_sca*aSDn,logdp)
+  Babs = Bext-Bsca
+  Bback = trapz(Q_back*aSDn,logdp)
+  Bratio = trapz(Q_ratio*aSDn,logdp)
+  bigG = trapz(g*Q_sca*aSDn,logdp)/trapz(Q_sca*aSDn,logdp)
+  Bpr = Bext - bigG*Bsca
+
+  if asDict:
+    return dict(Bext=Bext, Bsca=Bsca, Babs=Babs, G=bigG, Bpr=Bpr, Bback=Bback, Bratio=Bratio)
+  else:
+    return Bext, Bsca, Babs, bigG, Bpr, Bback, Bratio
+
+
+def Mie_SD_ZL(m, wavelength, dp, ndp, bin_end, nMedium=1.0, interpolate=False, asDict=False):
+#  http://pymiescatt.readthedocs.io/en/latest/forward.html#Mie_SD
+#  ndp is number concentration of lognormal dist. (i.e. dN/dlogdp)
   nMedium = nMedium.real
   m /= nMedium
   wavelength /= nMedium
@@ -274,13 +321,28 @@ def Mie_SD(m, wavelength, dp, ndp, nMedium=1.0, interpolate=False, asDict=False)
 
   for i in range(_length):
     Q_ext[i], Q_sca[i], Q_abs[i], g[i], Q_pr[i], Q_back[i], Q_ratio[i] = AutoMieQ(m,wavelength,dp[i],nMedium)
-
-  Bext = trapz(Q_ext*aSDn,dp)
-  Bsca = trapz(Q_sca*aSDn,dp)
+  logdp = np.log10(dp)
+  dlogdp = np.diff(np.log10(bin_end))
+  # Bext = trapz(Q_ext*aSDn,dp)
+  # Bsca = trapz(Q_sca*aSDn,dp)
+  # Babs = Bext-Bsca
+  # Bback = trapz(Q_back*aSDn,dp)
+  # Bratio = trapz(Q_ratio*aSDn,dp)
+  # bigG = trapz(g*Q_sca*aSDn,dp)/trapz(Q_sca*aSDn,dp)
+  # Bext = trapz(Q_ext*aSDn,logdp)
+  # Bsca = trapz(Q_sca*aSDn,logdp)
+  # Babs = Bext-Bsca
+  # Bback = trapz(Q_back*aSDn,logdp)
+  # Bratio = trapz(Q_ratio*aSDn,logdp)
+  # bigG = trapz(g*Q_sca*aSDn,logdp)/trapz(Q_sca*aSDn,logdp)
+  Bext = np.nansum(Q_ext*aSDn*dlogdp)
+  Bsca = np.nansum(Q_sca*aSDn*dlogdp)
   Babs = Bext-Bsca
-  Bback = trapz(Q_back*aSDn,dp)
-  Bratio = trapz(Q_ratio*aSDn,dp)
-  bigG = trapz(g*Q_sca*aSDn,dp)/trapz(Q_sca*aSDn,dp)
+  Bback = np.nansum(Q_back*aSDn*dlogdp)
+  Bratio = np.nansum(Q_ratio*aSDn*dlogdp)
+  bigG = np.nansum(g*Q_sca*aSDn*dlogdp)/np.nansum(Q_sca*aSDn*dlogdp)
+
+
   Bpr = Bext - bigG*Bsca
 
   if asDict:
@@ -486,6 +548,54 @@ def Mie_Lognormal(m,wavelength,geoStdDev,geoMean,numberOfParticles,nMedium=1.0, 
   m /= nMedium
   wavelength /= nMedium
   ithPart = lambda gammai, dp, dpgi, sigmagi: (gammai/(np.sqrt(2*np.pi)*np.log(sigmagi)*dp))*np.exp(-(np.log(dp)-np.log(dpgi))**2/(2*np.log(sigmagi)**2))
+  dp = np.logspace(np.log10(lower),np.log10(upper),numberOfBins) #np.logspace assures that dlogdp is the same
+  if all([type(x) in [list, tuple, np.ndarray] for x in [geoStdDev, geoMean]]):
+    # multimodal
+    if len(gamma)==1 and (len(geoStdDev)==len(geoMean)>1):
+      # gamma is distributed equally among modes
+      gamma = [1 for x in geoStdDev]
+      gamma = [float(x/np.sum(gamma)) for x in gamma]
+      ndpi = [numberOfParticles*ithPart(g,dp,dpg,sg) for g,dpg,sg in zip(gamma,geoMean,geoStdDev)]
+      ndp = np.sum(ndpi,axis=0)
+    elif len(gamma)==len(geoStdDev)==len(geoMean):
+      # gamma is fully specified for each mode
+      gamma = [float(x/np.sum(gamma)) for x in gamma]
+      ndpi = [numberOfParticles*ithPart(g,dp,dpg,sg) for g,dpg,sg in zip(gamma,geoMean,geoStdDev)]
+      ndp = np.sum(ndpi,axis=0)
+    else:
+      # user fucked up
+      warnings.warn("Not enough parameters to fully specify each mode.")
+      return None
+  else:
+    # unimodal
+    decomposeMultimodal = False
+    ndp = numberOfParticles*ithPart(1,dp,geoMean,geoStdDev)
+  if ndp[-1]>np.max(ndp)/100 or ndp[0]>np.max(ndp)/100:
+    warnings.warn("Warning: distribution may not be compact on the specified interval. Consider using a higher upper bound.")
+  Bext, Bsca, Babs, bigG, Bpr, Bback, Bratio = Mie_SD(m,wavelength,dp,ndp)
+  if returnDistribution:
+    if decomposeMultimodal:
+      if asDict==True:
+        return dict(Bext=Bext, Bsca=Bsca, Babs=Babs, bigG=bigG, Bpr=Bpr, Bback=Bback, Bratio=Bratio), dp, ndp, ndpi
+      else:
+        return Bext, Bsca, Babs, bigG, Bpr, Bback, Bratio, dp, ndp, ndpi
+    else:
+      if asDict==True:
+        return dict(Bext=Bext, Bsca=Bsca, Babs=Babs, bigG=bigG, Bpr=Bpr, Bback=Bback, Bratio=Bratio), dp, ndp
+      else:
+        return Bext, Bsca, Babs, bigG, Bpr, Bback, Bratio, dp, ndp
+  else:
+    if asDict==True:
+      return dict(Bext=Bext, Bsca=Bsca, Babs=Babs, bigG=bigG, Bpr=Bpr, Bback=Bback, Bratio=Bratio)
+    else:
+      return Bext, Bsca, Babs, bigG, Bpr, Bback, Bratio
+
+def Mie_Lognormal_ZL(m,wavelength,geoStdDev,geoMean,numberOfParticles,nMedium=1.0, numberOfBins=10000,lower=1,upper=1000,gamma=[1],returnDistribution=False,decomposeMultimodal=False,asDict=False):
+#  http://pymiescatt.readthedocs.io/en/latest/forward.html#Mie_Lognormal
+  nMedium = nMedium.real
+  m /= nMedium
+  wavelength /= nMedium
+  ithPart = lambda gammai, dp, dpgi, sigmagi: (gammai/(np.sqrt(2*np.pi)*np.log10(sigmagi)))*np.exp(-(np.log10(dp)-np.log10(dpgi))**2/(2*np.log10(sigmagi)**2))
   dp = np.logspace(np.log10(lower),np.log10(upper),numberOfBins)
   if all([type(x) in [list, tuple, np.ndarray] for x in [geoStdDev, geoMean]]):
     # multimodal
